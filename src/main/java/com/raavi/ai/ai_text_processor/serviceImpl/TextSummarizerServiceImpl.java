@@ -8,10 +8,12 @@ import com.raavi.ai.ai_text_processor.enums.SummaryType;
 import com.raavi.ai.ai_text_processor.exception.GeminiApiException;
 import com.raavi.ai.ai_text_processor.service.GeminiService;
 import com.raavi.ai.ai_text_processor.service.TextSummarizerService;
+import com.raavi.ai.ai_text_processor.util.CacheKeyGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -33,6 +35,11 @@ public class TextSummarizerServiceImpl implements TextSummarizerService {
 
     @Override
     @Transactional
+    @Cacheable(
+        value = "textSummaries",
+        key = "T(com.raavi.ai.ai_text_processor.util.CacheKeyGenerator).generateCacheKey(#request.text, #request.summaryType != null ? #request.summaryType : 'CONCISE')",
+        unless = "#result == null"
+    )
     public SummarizeResponse summarizeText(SummarizeRequest request) {
         try {
             // Validate request
@@ -45,16 +52,36 @@ public class TextSummarizerServiceImpl implements TextSummarizerService {
             
             SummaryType summaryType = SummaryType.fromString(summaryTypeStr);
             
-            logger.info("Processing summarization request with type: {}", summaryType);
+            // Log cache entry point with detailed information
+            String cacheKey = CacheKeyGenerator.generateCacheKey(request.getText(), summaryTypeStr);
+            logger.info(
+                "=== CACHE LOOKUP ===\n" +
+                "  Cache Key: {}\n" +
+                "  Text Length: {} characters\n" +
+                "  Summary Type: {}\n" +
+                "  Status: Checking cache...",
+                cacheKey.substring(0, Math.min(16, cacheKey.length())) + "...", 
+                request.getText().length(), 
+                summaryType
+            );
+            
+            logger.debug("Processing summarization request with type: {}", summaryType);
             
             // Get the prompt for this summary type
             String prompt = summaryType.getPrompt();
             
             // Call Gemini API via GeminiService
+            logger.info("⏳ CACHE MISS DETECTED - Calling Gemini API to generate new summary...");
+            long apiStartTime = System.currentTimeMillis();
+            
             GeminiService.GeminiResponse geminiResponse = geminiService.summarizeText(
                     request.getText(), 
                     prompt
             );
+            
+            long apiExecutionTime = System.currentTimeMillis() - apiStartTime;
+            logger.info("✓ Gemini API call completed in {}ms | Tokens Used: {}", 
+                    apiExecutionTime, geminiResponse.getTokensUsed());
             
             // Create and save TextSummary entity
             TextSummary textSummary = new TextSummary();
@@ -66,10 +93,20 @@ public class TextSummarizerServiceImpl implements TextSummarizerService {
             
             TextSummary savedSummary = textSummaryRepository.save(textSummary);
             
-            logger.info("Successfully saved summary with ID: {}", savedSummary.getId());
+            logger.info("✓ Summary saved to database with ID: {} | This result is now CACHED", savedSummary.getId());
             
             // Convert to response DTO
-            return mapToResponse(savedSummary);
+            SummarizeResponse response = mapToResponse(savedSummary);
+            
+            logger.info(
+                "=== CACHE STORAGE ===\n" +
+                "  Summary ID: {}\n" +
+                "  Status: Result cached successfully\n" +
+                "  Next identical request will use cached result",
+                savedSummary.getId()
+            );
+            
+            return response;
             
         } catch (IllegalArgumentException e) {
             logger.error("Validation error: {}", e.getMessage());
@@ -85,25 +122,55 @@ public class TextSummarizerServiceImpl implements TextSummarizerService {
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(
+        value = "summaryHistory",
+        key = "'page-' + #pageable.getPageNumber() + '-size-' + #pageable.getPageSize()",
+        unless = "#result == null"
+    )
     public Page<SummarizeResponse> getHistory(Pageable pageable) {
-        logger.info("Fetching summarization history with pagination: page={}, size={}", 
+        logger.info(
+            "=== CACHE LOOKUP (GET HISTORY) ===\n" +
+            "  Cache Key: page-{}-size-{}\n" +
+            "  Status: Checking cache...",
+            pageable.getPageNumber(), pageable.getPageSize()
+        );
+        
+        logger.info("⏳ CACHE MISS DETECTED - Fetching from database: page={}, size={}", 
                 pageable.getPageNumber(), pageable.getPageSize());
         
         Page<TextSummary> summaries = textSummaryRepository.findAll(pageable);
+        
+        logger.info("✓ Retrieved {} summaries from database | Result is now CACHED", 
+                summaries.getNumberOfElements());
         
         return summaries.map(this::mapToResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(
+        value = "summaryHistoryByType",
+        key = "'type-' + #summaryType + '-page-' + #pageable.getPageNumber() + '-size-' + #pageable.getPageSize()",
+        unless = "#result == null"
+    )
     public Page<SummarizeResponse> getHistoryByType(String summaryType, Pageable pageable) {
         try {
             SummaryType type = SummaryType.fromString(summaryType);
             
-            logger.info("Fetching summarization history by type: type={}, page={}, size={}", 
+            logger.info(
+                "=== CACHE LOOKUP (GET HISTORY BY TYPE) ===\n" +
+                "  Cache Key: type-{}-page-{}-size-{}\n" +
+                "  Status: Checking cache...",
+                summaryType, pageable.getPageNumber(), pageable.getPageSize()
+            );
+            
+            logger.info("⏳ CACHE MISS DETECTED - Fetching from database: type={}, page={}, size={}", 
                     type, pageable.getPageNumber(), pageable.getPageSize());
             
             Page<TextSummary> summaries = textSummaryRepository.findBySummaryType(type, pageable);
+            
+            logger.info("✓ Retrieved {} summaries by type '{}' from database | Result is now CACHED", 
+                    summaries.getNumberOfElements(), summaryType);
             
             return summaries.map(this::mapToResponse);
             

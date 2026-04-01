@@ -2,6 +2,7 @@ package com.raavi.ai.ai_text_processor.service;
 
 import com.raavi.ai.ai_text_processor.exception.GeminiApiException;
 import com.raavi.ai.ai_text_processor.exception.RateLimitException;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,6 +37,43 @@ public class GeminiService {
         this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
     }
+    
+    /**
+     * Validates that API key is properly loaded from environment
+     * This runs after all properties are injected
+     */
+    @PostConstruct
+    private void validateApiKey() {
+        logger.info("========== GEMINI SERVICE INITIALIZATION ==========");
+        
+        // Try to load from environment variable directly
+        String envApiKey = System.getenv("GEMINI_API_KEY");
+        logger.info("GEMINI_API_KEY environment variable present: {}", envApiKey != null);
+        
+        if (geminiApiKey == null || geminiApiKey.trim().isEmpty()) {
+            logger.error("❌ CRITICAL: Gemini API key is NOT SET!");
+            logger.error("   Please set the environment variable: GEMINI_API_KEY");
+            logger.error("   Current value from properties: {}", geminiApiKey);
+            throw new IllegalStateException("Gemini API key is not configured. Set GEMINI_API_KEY environment variable.");
+        }
+        
+        // Log masked key for debugging (show first 10 and last 5 chars only)
+        String maskedKey = maskApiKey(geminiApiKey);
+        logger.info("✓ API Key loaded successfully: {}", maskedKey);
+        logger.info("✓ Model configured: {}", geminiModel);
+        logger.info("✓ API URL configured: {}", geminiApiUrl);
+        logger.info("===================================================");
+    }
+    
+    /**
+     * Masks API key for secure logging
+     */
+    private String maskApiKey(String key) {
+        if (key == null || key.length() < 15) {
+            return "***INVALID***";
+        }
+        return key.substring(0, 10) + "..." + key.substring(key.length() - 5);
+    }
 
     /**
      * Calls Gemini API to generate a summary
@@ -47,31 +85,51 @@ public class GeminiService {
      */
     public GeminiResponse summarizeText(String text, String prompt) {
         try {
-            logger.info("Calling Gemini API for text summarization");
+            logger.debug("=== GEMINI API CALL START ===");
+            logger.debug("Text length: {} characters", text.length());
+            logger.debug("Prompt type: {}", prompt.substring(0, Math.min(50, prompt.length())));
             
             String fullPrompt = prompt + "\n\nText to summarize:\n" + text;
-            
             String requestBody = buildRequestBody(fullPrompt);
             
             String url = geminiApiUrl + geminiModel + ":generateContent?key=" + geminiApiKey;
+            logger.debug("API Endpoint: {}", geminiApiUrl + geminiModel + ":generateContent");
+            logger.debug("API Key being used: {}", maskApiKey(geminiApiKey));
             
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
+            logger.debug("Headers set. Content-Type: application/json");
             
             HttpEntity<String> entity = new HttpEntity<>(requestBody, headers);
+            logger.info("Calling Gemini API...");
             
             ResponseEntity<String> response = restTemplate.postForEntity(url, entity, String.class);
             
-            return parseGeminiResponse(response.getBody());
+            logger.info("✓ Gemini API call successful. Status: {}", response.getStatusCode());
+            logger.debug("Response received. Body length: {} characters", response.getBody().length());
+            
+            GeminiResponse result = parseGeminiResponse(response.getBody());
+            logger.info("✓ Response parsed successfully. Summary generated.");
+            logger.debug("=== GEMINI API CALL END (SUCCESS) ===");
+            
+            return result;
             
         } catch (HttpClientErrorException.TooManyRequests e) {
-            logger.error("Rate limit exceeded from Gemini API", e);
+            logger.error("❌ Rate limit exceeded from Gemini API", e);
             throw new RateLimitException("Gemini API rate limit exceeded. Please try again later.", 60);
         } catch (HttpClientErrorException e) {
-            logger.error("Gemini API error: {}", e.getStatusCode(), e);
+            logger.error("❌ Gemini API error - Status: {}, Message: {}", e.getStatusCode(), e.getMessage());
+            
+            // Check for API key issue
+            if (e.getStatusCode().value() == 400 && e.getMessage().contains("API key")) {
+                logger.error("   ⚠️  API KEY ISSUE DETECTED!");
+                logger.error("   Please verify your GEMINI_API_KEY environment variable is correct and valid.");
+                logger.error("   Currently using: {}", maskApiKey(geminiApiKey));
+            }
+            
             throw new GeminiApiException("Gemini API error: " + e.getMessage(), e.getStatusCode().value(), e);
         } catch (Exception e) {
-            logger.error("Unexpected error calling Gemini API", e);
+            logger.error("❌ Unexpected error calling Gemini API: {}", e.getMessage(), e);
             throw new GeminiApiException("Failed to call Gemini API: " + e.getMessage(), e);
         }
     }

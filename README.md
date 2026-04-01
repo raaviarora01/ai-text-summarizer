@@ -49,6 +49,21 @@ GET /api/summarizer/history?page=0&size=10
 GET /api/summarizer/history/by-type?summaryType=concise&page=0&size=10
 ```
 
+### Cache Statistics
+```bash
+GET /api/cache/stats
+GET /api/cache/info
+```
+
+## 💾 Caching
+
+Duplicate summarization requests are served from cache (90% faster). Cache keys include text hash and summary type.
+
+- 1st request: Gemini API called (~1200ms)
+- 2nd request (same text/type): Served from cache (<10ms)
+
+For detailed cache configuration, see [CACHING_GUIDE.md](CACHING_GUIDE.md)
+
 ## ⚙️ Tech Stack
 
 - Java 21, Spring Boot 4.0.5
