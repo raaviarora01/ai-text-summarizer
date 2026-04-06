@@ -44,6 +44,6 @@ Thumbs.db
 .project
 .settings/
 
-### Local Run Scripts ###
-run.ps1
-run.sh
+### Environment Variables ###
+.env
+.env.*

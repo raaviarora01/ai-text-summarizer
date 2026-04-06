@@ -7,7 +7,8 @@ A Spring Boot application that uses Google's Gemini AI to summarize text in mult
 - Summarize text in 4 different formats: **concise**, **detailed**, **bullet_points**, **executive**
 - View summary history with pagination
 - Filter summaries by type
-- REST API
+- Intelligent caching — duplicate requests served from memory, no redundant API calls
+- Per-IP rate limiting to prevent abuse
 
 ## 🚀 Quick Start
 
@@ -18,13 +19,17 @@ A Spring Boot application that uses Google's Gemini AI to summarize text in mult
 
 ### Setup
 
-**For detailed setup instructions, see [SETUP.md](SETUP.md)**
+Create a `.env` file in the project root:
+```
+GEMINI_API_KEY=your_api_key_here
+DB_URL=jdbc:mysql://localhost:3306/text_summarizer_db?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+DB_USERNAME=root
+DB_PASSWORD=your_password_here
+```
 
-Quick setup:
-```powershell
-Copy-Item run.ps1.example run.ps1
-# Edit run.ps1 with your credentials
-.\run.ps1
+Then run:
+```bash
+mvn spring-boot:run
 ```
 
 App runs on `http://localhost:8080`
@@ -62,11 +67,21 @@ Duplicate summarization requests are served from cache (90% faster). Cache keys 
 - 1st request: Gemini API called (~1200ms)
 - 2nd request (same text/type): Served from cache (<10ms)
 
-For detailed cache configuration, see [CACHING_GUIDE.md](CACHING_GUIDE.md)
+## 🛡️ Rate Limiting
+
+Powered by [Bucket4j](https://github.com/bucket4j/bucket4j), limits are applied per IP address:
+
+| Endpoint | Limit |
+|---|---|
+| `POST /api/summarizer/summarize` | 10 requests / 60s |
+| All other `/api/**` routes | 60 requests / 60s |
+
+Requests exceeding the limit receive a `429 Too Many Requests` response. Limits are configurable in `application.properties`.
 
 ## ⚙️ Tech Stack
 
 - Java 21, Spring Boot 4.0.5
 - MySQL 8.0+
 - Google Gemini 2.5 Flash API
+- Caffeine Cache + Bucket4j
 - Maven

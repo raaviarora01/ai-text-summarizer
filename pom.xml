@@ -75,6 +75,29 @@
             <version>4.0.0</version>
         </dependency>
 
+        <!-- Bucket4j rate limiting -->
+        <dependency>
+            <groupId>com.giffing.bucket4j.spring.boot.starter</groupId>
+            <artifactId>bucket4j-spring-boot-starter</artifactId>
+            <version>0.14.0</version>
+        </dependency>
+        <!-- Caffeine in-memory cache – required by bucket4j-spring-boot-starter -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+        <!-- Caffeine JCache (JSR-107) provider – lets Bucket4j use Caffeine via JCacheCacheResolver -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>jcache</artifactId>
+        </dependency>
+        <!-- JCache API -->
+        <dependency>
+            <groupId>javax.cache</groupId>
+            <artifactId>cache-api</artifactId>
+            <version>1.1.1</version>
+        </dependency>
+
         <dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
