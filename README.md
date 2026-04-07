@@ -34,6 +34,19 @@ mvn spring-boot:run
 
 App runs on `http://localhost:8080`
 
+## 📄 API Documentation (Swagger UI)
+
+Interactive API documentation is available via Swagger UI.
+
+Open in browser:
+
+http://localhost:8080/swagger-ui/index.html
+
+
+- Test APIs directly from the browser (no Postman required)
+- View request/response formats and schemas
+- Explore endpoints with detailed descriptions and error responses
+
 ## 📡 API Endpoints
 
 ### Summarize Text
