@@ -150,7 +150,7 @@ mvn test -Dtest="FullIntegrationTest+RateLimitIntegrationTest"
 
 - TextSummarizerControllerTest — API endpoints, validation, status codes
 - CacheStatsControllerTest — cache stats and info endpoints
-- 
+
 #### 🗄️ Repository Tests (@DataJpaTest)
 
 - TextSummaryRepositoryTest — CRUD operations, filtering, pagination (H2 database)
