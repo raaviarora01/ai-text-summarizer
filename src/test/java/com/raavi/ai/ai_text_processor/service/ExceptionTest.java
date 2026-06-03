@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.*;
  * Verifies correct HTTP status codes, messages, and constructors.
  */
 @DisplayName("Exception Classes Tests")
-class ExceptionTest {
+public class ExceptionTest {
 
     // ─── GeminiApiException ───────────────────────────────────────────────────
 

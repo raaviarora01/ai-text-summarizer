@@ -36,6 +36,39 @@ mvn spring-boot:run
 
 App runs on `http://localhost:8080`
 
+
+## 🏗️ Architecture Flow
+
+Client Request
+↓
+Controller Layer
+↓
+Service Layer
+↓
+Gemini AI Integration
+↓
+Caching Layer
+↓
+Database Persistence
+↓
+Response DTO
+
+## 📁 Project Structure
+
+src/main/java/com/raavi/ai/ai_text_processor
+├── controller
+├── service
+├── serviceImpl
+├── dao
+├── entity
+├── dto
+├── enums
+├── config
+├── cache
+├── aspect
+├── util
+├── exception
+
 ## 📄 API Documentation (Swagger UI)
 
 http://localhost:8080/swagger-ui/index.html
@@ -166,3 +199,13 @@ mvn test -Dtest="FullIntegrationTest+RateLimitIntegrationTest"
 - Fast feedback loop with targeted test execution
 - Full regression suite for end-to-end validation
 - High test coverage across all layers
+
+## 🚀 Future Enhancements
+
+- JWT Authentication & Authorization
+- User-specific summary history
+- Dockerization
+- AWS deployment
+- Redis distributed caching
+- RAG-based document Q&A system
+- Frontend dashboard using React

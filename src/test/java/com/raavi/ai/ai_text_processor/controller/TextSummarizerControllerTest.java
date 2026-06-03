@@ -6,10 +6,12 @@ import com.raavi.ai.ai_text_processor.dto.SummarizeResponse;
 import com.raavi.ai.ai_text_processor.exception.GeminiApiException;
 import com.raavi.ai.ai_text_processor.exception.RateLimitException;
 import com.raavi.ai.ai_text_processor.service.TextSummarizerService;
+import com.raavi.ai.ai_text_processor.service.GeminiService;
 import org.junit.jupiter.api.DisplayName;
+import org.springframework.test.context.ActiveProfiles;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.http.MediaType;
@@ -33,8 +35,10 @@ import static org.hamcrest.Matchers.*;
  * and exception-to-status-code mappings.
  */
 @WebMvcTest(TextSummarizerController.class)
+@ActiveProfiles("test")
+@org.springframework.test.context.TestPropertySource(properties = "spring.cache.type=none")
 @DisplayName("TextSummarizerController Tests")
-class TextSummarizerControllerTest {
+public class TextSummarizerControllerTest {
 
     @Autowired
     private MockMvc mockMvc;
@@ -44,6 +48,11 @@ class TextSummarizerControllerTest {
 
     @MockitoBean
     private TextSummarizerService textSummarizerService;
+
+    // GeminiService must be mocked — it throws IllegalStateException at startup
+    // if GEMINI_API_KEY env var is missing, even in @WebMvcTest slice tests
+    @MockitoBean
+    private GeminiService geminiService;
 
     // ─── POST /api/summarizer/summarize — success ─────────────────────────────
 
@@ -256,7 +265,7 @@ class TextSummarizerControllerTest {
     // ─── GET /api/summarizer/history — success ────────────────────────────────
 
     @Test
-    @DisplayName("GET /history returns 200 with default pagination")
+@   DisplayName("GET /history returns 200 with default pagination")
     void getHistory_defaultPagination_returns200() throws Exception {
         SummarizeResponse r = buildResponse(1L, "concise", "Summary");
         Page<SummarizeResponse> page = new PageImpl<>(List.of(r));

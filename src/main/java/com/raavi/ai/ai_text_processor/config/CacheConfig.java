@@ -4,8 +4,8 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.CacheManager;
-import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Bean;
+import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.cache.caffeine.CaffeineCacheManager;
 
@@ -29,8 +29,8 @@ import java.util.concurrent.TimeUnit;
  *
  * For distributed/production environments, switch to Redis CacheManager.
  */
-@Configuration
 @EnableCaching
+@Configuration
 public class CacheConfig {
 
     private static final Logger logger = LoggerFactory.getLogger(CacheConfig.class);

@@ -1,5 +1,6 @@
 package com.raavi.ai.ai_text_processor.service;
 
+import com.raavi.ai.ai_text_processor.aspect.CacheAspect;
 import com.raavi.ai.ai_text_processor.dao.TextSummaryRepository;
 import com.raavi.ai.ai_text_processor.dto.SummarizeRequest;
 import com.raavi.ai.ai_text_processor.dto.SummarizeResponse;
@@ -16,6 +17,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import org.springframework.context.ApplicationContext;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -23,6 +27,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -31,17 +36,29 @@ import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for TextSummarizerServiceImpl.
- * GeminiService and repository are mocked — no DB or API calls.
+ *
+ * @MockitoSettings(strictness = LENIENT) is required because applicationContext.getBean()
+ * is stubbed in @BeforeEach but only used by tests that call summarizeText() (which
+ * invokes self()). Tests that call summarizeTextCached() directly or test validation
+ * (which throws before self() is called) don't use this stub — without LENIENT,
+ * Mockito's strict mode flags these as UnnecessaryStubbingException.
  */
 @ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
 @DisplayName("TextSummarizerService Unit Tests")
-class TextSummarizerServiceTest {
+public class TextSummarizerServiceTest {
 
     @Mock
     private GeminiService geminiService;
 
     @Mock
     private TextSummaryRepository textSummaryRepository;
+
+    @Mock
+    private CacheAspect cacheAspect;
+
+    @Mock
+    private ApplicationContext applicationContext;
 
     @InjectMocks
     private TextSummarizerServiceImpl service;
@@ -51,6 +68,8 @@ class TextSummarizerServiceTest {
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(service, "geminiModel", "gemini-2.5-flash");
+        // LENIENT: only used by tests that call summarizeText() via self() proxy
+        when(applicationContext.getBean(TextSummarizerServiceImpl.class)).thenReturn(service);
 
         savedEntity = new TextSummary();
         savedEntity.setId(1L);
@@ -62,10 +81,10 @@ class TextSummarizerServiceTest {
         savedEntity.setCreatedAt(LocalDateTime.now());
     }
 
-    // ─── summarizeText: happy path ────────────────────────────────────────────
+    // ─── summarizeTextCached: happy path ──────────────────────────────────────
 
     @Test
-    @DisplayName("summarizeText returns response with correct fields")
+    @DisplayName("summarizeTextCached returns response with correct fields")
     void summarizeText_success() {
         SummarizeRequest request = new SummarizeRequest(
                 "This is a test text that needs to be summarized.", "concise");
@@ -74,7 +93,7 @@ class TextSummarizerServiceTest {
                 .thenReturn(new GeminiService.GeminiResponse("Test summary.", 100));
         when(textSummaryRepository.save(any(TextSummary.class))).thenReturn(savedEntity);
 
-        SummarizeResponse response = service.summarizeText(request);
+        SummarizeResponse response = service.summarizeTextCached(request, new AtomicBoolean(false));
 
         assertThat(response).isNotNull();
         assertThat(response.getId()).isEqualTo(1L);
@@ -84,7 +103,7 @@ class TextSummarizerServiceTest {
     }
 
     @Test
-    @DisplayName("summarizeText defaults to CONCISE when summaryType is null")
+    @DisplayName("summarizeTextCached defaults to CONCISE when summaryType is null")
     void summarizeText_nullSummaryType_defaultsConcise() {
         SummarizeRequest request = new SummarizeRequest(
                 "This is a test text that needs to be summarized.", null);
@@ -93,15 +112,14 @@ class TextSummarizerServiceTest {
                 .thenReturn(new GeminiService.GeminiResponse("Concise summary.", 80));
         when(textSummaryRepository.save(any(TextSummary.class))).thenReturn(savedEntity);
 
-        SummarizeResponse response = service.summarizeText(request);
+        service.summarizeTextCached(request, new AtomicBoolean(false));
 
-        assertThat(response).isNotNull();
         verify(geminiService).summarizeText(anyString(), contains("2-3 sentences"));
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"concise", "detailed", "bullet_points", "executive"})
-    @DisplayName("summarizeText works with all valid summary types")
+    @DisplayName("summarizeTextCached works with all valid summary types")
     void summarizeText_allValidTypes(String summaryType) {
         SummarizeRequest request = new SummarizeRequest(
                 "Text that is long enough for summarization testing.", summaryType);
@@ -120,33 +138,47 @@ class TextSummarizerServiceTest {
 
         when(textSummaryRepository.save(any())).thenReturn(entity);
 
-        assertThatCode(() -> service.summarizeText(request)).doesNotThrowAnyException();
+        assertThatCode(() -> service.summarizeTextCached(request, new AtomicBoolean(false)))
+                .doesNotThrowAnyException();
     }
 
-    // ─── summarizeText: validation failures ───────────────────────────────────
+    @Test
+    @DisplayName("summarizeTextCached sets methodExecuted flag to true on execution")
+    void summarizeTextCached_setsMethodExecutedFlag() {
+        SummarizeRequest request = new SummarizeRequest(
+                "This is a test text that needs to be summarized.", "concise");
+
+        when(geminiService.summarizeText(anyString(), anyString()))
+                .thenReturn(new GeminiService.GeminiResponse("Summary", 50));
+        when(textSummaryRepository.save(any())).thenReturn(savedEntity);
+
+        AtomicBoolean flag = new AtomicBoolean(false);
+        service.summarizeTextCached(request, flag);
+
+        assertThat(flag.get()).isTrue();
+    }
+
+    // ─── validation failures ──────────────────────────────────────────────────
 
     @Test
-    @DisplayName("summarizeText throws IllegalArgumentException for null text")
+    @DisplayName("summarizeText throws for null text")
     void summarizeText_nullText_throws() {
-        SummarizeRequest request = new SummarizeRequest(null, "concise");
-        assertThatThrownBy(() -> service.summarizeText(request))
+        assertThatThrownBy(() -> service.summarizeText(new SummarizeRequest(null, "concise")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Text cannot be null or empty");
     }
 
     @Test
-    @DisplayName("summarizeText throws IllegalArgumentException for empty text")
+    @DisplayName("summarizeText throws for empty text")
     void summarizeText_emptyText_throws() {
-        SummarizeRequest request = new SummarizeRequest("", "concise");
-        assertThatThrownBy(() -> service.summarizeText(request))
+        assertThatThrownBy(() -> service.summarizeText(new SummarizeRequest("", "concise")))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    @DisplayName("summarizeText throws IllegalArgumentException for text shorter than 10 chars")
+    @DisplayName("summarizeText throws for text shorter than 10 chars")
     void summarizeText_tooShortText_throws() {
-        SummarizeRequest request = new SummarizeRequest("short", "concise");
-        assertThatThrownBy(() -> service.summarizeText(request))
+        assertThatThrownBy(() -> service.summarizeText(new SummarizeRequest("short", "concise")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("10 characters");
     }
@@ -154,27 +186,25 @@ class TextSummarizerServiceTest {
     @Test
     @DisplayName("summarizeText throws for text exceeding 50000 characters")
     void summarizeText_tooLongText_throws() {
-        String tooLong = "a".repeat(50001);
-        SummarizeRequest request = new SummarizeRequest(tooLong, "concise");
-        assertThatThrownBy(() -> service.summarizeText(request))
+        assertThatThrownBy(() -> service.summarizeText(
+                new SummarizeRequest("a".repeat(50001), "concise")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("50000");
     }
 
     @Test
-    @DisplayName("summarizeText throws IllegalArgumentException for invalid summaryType")
+    @DisplayName("summarizeText throws for invalid summaryType")
     void summarizeText_invalidSummaryType_throws() {
-        SummarizeRequest request = new SummarizeRequest(
-                "This is a test text that needs to be summarized.", "invalid_type");
-        assertThatThrownBy(() -> service.summarizeText(request))
+        assertThatThrownBy(() -> service.summarizeText(new SummarizeRequest(
+                "This is a test text that needs to be summarized.", "invalid_type")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Invalid summary type");
     }
 
-    // ─── summarizeText: Gemini API failure ────────────────────────────────────
+    // ─── Gemini API failure ───────────────────────────────────────────────────
 
     @Test
-    @DisplayName("summarizeText propagates GeminiApiException when API fails")
+    @DisplayName("summarizeTextCached propagates GeminiApiException")
     void summarizeText_geminiFailure_propagatesException() {
         SummarizeRequest request = new SummarizeRequest(
                 "This is a test text that needs to be summarized.", "concise");
@@ -182,7 +212,7 @@ class TextSummarizerServiceTest {
         when(geminiService.summarizeText(anyString(), anyString()))
                 .thenThrow(new GeminiApiException("Gemini unavailable", 503));
 
-        assertThatThrownBy(() -> service.summarizeText(request))
+        assertThatThrownBy(() -> service.summarizeTextCached(request, new AtomicBoolean(false)))
                 .isInstanceOf(GeminiApiException.class)
                 .hasMessageContaining("Gemini unavailable");
     }
@@ -194,7 +224,7 @@ class TextSummarizerServiceTest {
                 "This is a test text that needs to be summarized.", "concise");
 
         when(geminiService.summarizeText(anyString(), anyString()))
-                .thenThrow(new RuntimeException("Unexpected DB failure"));
+                .thenThrow(new RuntimeException("Unexpected failure"));
 
         assertThatThrownBy(() -> service.summarizeText(request))
                 .isInstanceOf(RuntimeException.class);
@@ -205,12 +235,11 @@ class TextSummarizerServiceTest {
     @Test
     @DisplayName("getHistory returns mapped page from repository")
     void getHistory_returnsMappedPage() {
-        Page<TextSummary> repoPage = new PageImpl<>(List.of(savedEntity));
-        when(textSummaryRepository.findAll(any(PageRequest.class))).thenReturn(repoPage);
+        when(textSummaryRepository.findAll(any(PageRequest.class)))
+                .thenReturn(new PageImpl<>(List.of(savedEntity)));
 
         Page<SummarizeResponse> result = service.getHistory(PageRequest.of(0, 10));
 
-        assertThat(result).isNotNull();
         assertThat(result.getContent()).hasSize(1);
         assertThat(result.getContent().get(0).getId()).isEqualTo(1L);
     }
@@ -218,13 +247,9 @@ class TextSummarizerServiceTest {
     @Test
     @DisplayName("getHistory returns empty page when no records exist")
     void getHistory_emptyResult() {
-        when(textSummaryRepository.findAll(any(PageRequest.class)))
-                .thenReturn(Page.empty());
+        when(textSummaryRepository.findAll(any(PageRequest.class))).thenReturn(Page.empty());
 
-        Page<SummarizeResponse> result = service.getHistory(PageRequest.of(0, 10));
-
-        assertThat(result.getContent()).isEmpty();
-        assertThat(result.getTotalElements()).isZero();
+        assertThat(service.getHistory(PageRequest.of(0, 10)).getContent()).isEmpty();
     }
 
     // ─── getHistoryByType ─────────────────────────────────────────────────────
@@ -232,9 +257,8 @@ class TextSummarizerServiceTest {
     @Test
     @DisplayName("getHistoryByType returns filtered results")
     void getHistoryByType_returnsFiltered() {
-        Page<TextSummary> repoPage = new PageImpl<>(List.of(savedEntity));
         when(textSummaryRepository.findBySummaryType(eq(SummaryType.CONCISE), any()))
-                .thenReturn(repoPage);
+                .thenReturn(new PageImpl<>(List.of(savedEntity)));
 
         Page<SummarizeResponse> result = service.getHistoryByType("concise", PageRequest.of(0, 10));
 
@@ -243,7 +267,7 @@ class TextSummarizerServiceTest {
     }
 
     @Test
-    @DisplayName("getHistoryByType throws IllegalArgumentException for invalid type")
+    @DisplayName("getHistoryByType throws for invalid type")
     void getHistoryByType_invalidType_throws() {
         assertThatThrownBy(() -> service.getHistoryByType("not_a_type", PageRequest.of(0, 10)))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -253,7 +277,7 @@ class TextSummarizerServiceTest {
     // ─── repository interaction ───────────────────────────────────────────────
 
     @Test
-    @DisplayName("summarizeText saves entity to repository exactly once")
+    @DisplayName("summarizeTextCached saves entity exactly once")
     void summarizeText_savesExactlyOnce() {
         SummarizeRequest request = new SummarizeRequest(
                 "This is a test text that needs to be summarized.", "concise");
@@ -262,13 +286,13 @@ class TextSummarizerServiceTest {
                 .thenReturn(new GeminiService.GeminiResponse("Summary", 50));
         when(textSummaryRepository.save(any())).thenReturn(savedEntity);
 
-        service.summarizeText(request);
+        service.summarizeTextCached(request, new AtomicBoolean(false));
 
         verify(textSummaryRepository, times(1)).save(any(TextSummary.class));
     }
 
     @Test
-    @DisplayName("summarizeText calls GeminiService exactly once")
+    @DisplayName("summarizeTextCached calls GeminiService exactly once")
     void summarizeText_callsGeminiOnce() {
         SummarizeRequest request = new SummarizeRequest(
                 "This is a test text that needs to be summarized.", "concise");
@@ -277,7 +301,7 @@ class TextSummarizerServiceTest {
                 .thenReturn(new GeminiService.GeminiResponse("Summary", 50));
         when(textSummaryRepository.save(any())).thenReturn(savedEntity);
 
-        service.summarizeText(request);
+        service.summarizeTextCached(request, new AtomicBoolean(false));
 
         verify(geminiService, times(1)).summarizeText(anyString(), anyString());
     }

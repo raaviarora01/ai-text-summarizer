@@ -1,55 +1,63 @@
 package com.raavi.ai.ai_text_processor.integration;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.raavi.ai.ai_text_processor.dao.TextSummaryRepository;
 import com.raavi.ai.ai_text_processor.dto.SummarizeRequest;
 import com.raavi.ai.ai_text_processor.service.GeminiService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cache.CacheManager;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
-
-import java.util.ArrayList;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
- * Rate limiting integration tests.
- * Bucket4j is enabled with a very low limit (3 req / 60s)
- * so tests can trigger the 429 quickly without sending 10+ real requests.
+ * Rate limiting integration tests using TestRestTemplate (real HTTP requests).
  *
- * These tests are isolated to their own Spring context via @TestPropertySource
- * so they don't affect other test classes.
+ * IMPORTANT: Bucket4j is a servlet filter. MockMvc with @AutoConfigureMockMvc
+ * bypasses the servlet filter chain entirely — rate limit headers never appear
+ * and limits are never enforced. Real HTTP via TestRestTemplate goes through
+ * the full servlet chain including Bucket4j filters.
+ *
+ * @DirtiesContext resets the Spring context (and Caffeine cache) after each
+ * test class, preventing bucket state from leaking between tests.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@AutoConfigureMockMvc
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @TestPropertySource(properties = {
-        "spring.datasource.url=jdbc:h2:mem:ratelimitdb;DB_CLOSE_DELAY=-1",
+        "spring.datasource.url=jdbc:h2:mem:ratelimitdb;DB_CLOSE_DELAY=-1;NON_KEYWORDS=VALUE",
         "spring.datasource.driver-class-name=org.h2.Driver",
         "spring.datasource.username=sa",
         "spring.datasource.password=",
         "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect",
+        "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.H2Dialect",
         "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.show-sql=false",
+        "spring.jpa.generate-ddl=true",
         "gemini.api.key=test-api-key-not-real-123456789012345",
         "gemini.model=gemini-2.5-flash",
         "gemini.api.url=https://generativelanguage.googleapis.com/v1/models/",
-        // Enable Bucket4j with tiny limit for testing
         "bucket4j.enabled=true",
         "bucket4j.cache-to-use=none",
-        // Filter 0: POST /summarize — 3 req / 60s
+        // Filter 0: POST /summarize — capacity=3 for fast testing
         "bucket4j.filters[0].cache-name=rate-limit-summarize",
         "bucket4j.filters[0].url=/api/summarizer/summarize",
         "bucket4j.filters[0].http-response-body={\"status\":429,\"errorCode\":\"RATE_LIMIT_EXCEEDED\",\"message\":\"Rate limit exceeded.\"}",
@@ -62,7 +70,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "bucket4j.filters[0].rate-limits[0].bandwidths[0].time=60",
         "bucket4j.filters[0].rate-limits[0].bandwidths[0].unit=seconds",
         "bucket4j.filters[0].rate-limits[0].bandwidths[0].refill-speed=greedy",
-        // Filter 1: global /api/** — 10 req / 60s
+        // Filter 1: global /api/** — capacity=10
         "bucket4j.filters[1].cache-name=rate-limit-global",
         "bucket4j.filters[1].url=^/api/.*",
         "bucket4j.filters[1].http-response-body={\"status\":429,\"errorCode\":\"RATE_LIMIT_EXCEEDED\",\"message\":\"Global rate limit exceeded.\"}",
@@ -75,139 +83,112 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "bucket4j.filters[1].rate-limits[0].bandwidths[0].unit=seconds",
         "bucket4j.filters[1].rate-limits[0].bandwidths[0].refill-speed=greedy"
 })
+@AutoConfigureTestRestTemplate
 @DisplayName("Rate Limiting Integration Tests")
-class RateLimitIntegrationTest {
+public class RateLimitIntegrationTest {
+
+    @LocalServerPort
+    private int port;
 
     @Autowired
-    private MockMvc mockMvc;
-
-    @Autowired
-    private ObjectMapper objectMapper;
+    private TestRestTemplate restTemplate;
 
     @Autowired
     private TextSummaryRepository repository;
 
-    @Autowired
-    private CacheManager cacheManager;
-
     @MockitoBean
     private GeminiService geminiService;
 
+    private String baseUrl;
+
     @BeforeEach
     void setUp() {
+        baseUrl = "http://localhost:" + port;
         repository.deleteAll();
-        cacheManager.getCacheNames().forEach(name -> {
-            var cache = cacheManager.getCache(name);
-            if (cache != null) cache.clear();
-        });
-
         when(geminiService.summarizeText(anyString(), anyString()))
                 .thenReturn(new GeminiService.GeminiResponse("Rate limit test summary.", 50));
     }
 
-    // ─── rate limit headers present ───────────────────────────────────────────
+    private HttpEntity<SummarizeRequest> summarizeRequest() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return new HttpEntity<>(
+                new SummarizeRequest("Valid text for rate limit testing purposes here.", "concise"),
+                headers);
+    }
+
+    // ─── headers present ─────────────────────────────────────────────────────
 
     @Test
+    @Order(1)
     @DisplayName("[RATE LIMIT] Response includes X-RateLimit-Limit header")
-    void rateLimitHeader_presentOnSuccessfulRequest() throws Exception {
-        SummarizeRequest request = new SummarizeRequest(
-                "Valid text for rate limit header test.", "concise");
+    void rateLimitHeader_presentOnSuccessfulRequest() {
+        ResponseEntity<String> response = restTemplate.exchange(
+                baseUrl + "/api/summarizer/summarize",
+                HttpMethod.POST, summarizeRequest(), String.class);
 
-        mockMvc.perform(post("/api/summarizer/summarize")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isOk())
-                .andExpect(header().exists("X-RateLimit-Limit"));
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getHeaders().getFirst("X-RateLimit-Limit")).isNotNull();
     }
 
     @Test
+    @Order(2)
     @DisplayName("[RATE LIMIT] X-RateLimit-Limit header value is 3 on summarize endpoint")
-    void rateLimitHeader_correctValue() throws Exception {
-        SummarizeRequest request = new SummarizeRequest(
-                "Valid text to check rate limit header value.", "concise");
+    void rateLimitHeader_correctValue() {
+        ResponseEntity<String> response = restTemplate.exchange(
+                baseUrl + "/api/summarizer/summarize",
+                HttpMethod.POST, summarizeRequest(), String.class);
 
-        mockMvc.perform(post("/api/summarizer/summarize")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isOk())
-                .andExpect(header().string("X-RateLimit-Limit", "3"));
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getHeaders().getFirst("X-RateLimit-Limit")).isEqualTo("3");
     }
 
     // ─── rate limit trigger ───────────────────────────────────────────────────
 
     @Test
-    @DisplayName("[RATE LIMIT] 4th request to /summarize returns 429 after 3 allowed")
-    void summarize_rateLimitTriggered_after3Requests() throws Exception {
-        SummarizeRequest request = new SummarizeRequest(
-                "Text to trigger rate limit after three allowed requests.", "concise");
-        String body = objectMapper.writeValueAsString(request);
-
-        List<Integer> statusCodes = new ArrayList<>();
-
-        // Send 4 requests
-        for (int i = 0; i < 4; i++) {
-            MvcResult result = mockMvc.perform(post("/api/summarizer/summarize")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(body))
-                    .andReturn();
-            statusCodes.add(result.getResponse().getStatus());
-        }
-
+    @Order(3)
+    @DisplayName("[RATE LIMIT] 4th request returns 429 after 3 allowed")
+    void summarize_rateLimitTriggered_after3Requests() {
         // First 3 should succeed
-        assertThat(statusCodes.subList(0, 3))
-                .allSatisfy(s -> assertThat(s).isEqualTo(200));
+        for (int i = 0; i < 3; i++) {
+            ResponseEntity<String> r = restTemplate.exchange(
+                    baseUrl + "/api/summarizer/summarize",
+                    HttpMethod.POST, summarizeRequest(), String.class);
+            assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        }
 
         // 4th should be rate limited
-        assertThat(statusCodes.get(3)).isEqualTo(429);
+        ResponseEntity<String> blocked = restTemplate.exchange(
+                baseUrl + "/api/summarizer/summarize",
+                HttpMethod.POST, summarizeRequest(), String.class);
+        assertThat(blocked.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(blocked.getBody()).contains("RATE_LIMIT_EXCEEDED");
     }
 
     @Test
-    @DisplayName("[RATE LIMIT] 429 response body has correct errorCode")
-    void rateLimitResponse_hasCorrectBody() throws Exception {
-        SummarizeRequest request = new SummarizeRequest(
-                "Text used to exhaust rate limit and check 429 response body.", "concise");
-        String body = objectMapper.writeValueAsString(request);
-
-        // Exhaust the limit
+    @Order(4)
+    @DisplayName("[RATE LIMIT] GET /history is not blocked by summarize rate limit")
+    void history_notBlockedBySummarizeRateLimit() {
+        // Exhaust /summarize limit
         for (int i = 0; i < 3; i++) {
-            mockMvc.perform(post("/api/summarizer/summarize")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(body)).andReturn();
+            restTemplate.exchange(baseUrl + "/api/summarizer/summarize",
+                    HttpMethod.POST, summarizeRequest(), String.class);
         }
 
-        // 4th request — check 429 response
-        mockMvc.perform(post("/api/summarizer/summarize")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isTooManyRequests())
-                .andExpect(jsonPath("$.status").value(429))
-                .andExpect(jsonPath("$.errorCode").value("RATE_LIMIT_EXCEEDED"));
+        // /history should still work
+        ResponseEntity<String> r = restTemplate.getForEntity(
+                baseUrl + "/api/summarizer/history", String.class);
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 
     @Test
-    @DisplayName("[RATE LIMIT] GET /history is NOT blocked by summarize rate limit")
-    void history_notBlockedBySummarizeRateLimit() throws Exception {
-        SummarizeRequest request = new SummarizeRequest(
-                "Text to exhaust summarize limit then test history.", "concise");
-        String body = objectMapper.writeValueAsString(request);
+    @Order(5)
+    @DisplayName("[RATE LIMIT] GET /history has X-RateLimit-Limit of 10 (global filter)")
+    void history_hasGlobalRateLimitHeader() {
+        ResponseEntity<String> r = restTemplate.getForEntity(
+                baseUrl + "/api/summarizer/history", String.class);
 
-        // Exhaust /summarize rate limit
-        for (int i = 0; i < 3; i++) {
-            mockMvc.perform(post("/api/summarizer/summarize")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(body)).andReturn();
-        }
-
-        // /history should still work (governed by global filter only)
-        mockMvc.perform(get("/api/summarizer/history"))
-                .andExpect(status().isOk());
-    }
-
-    @Test
-    @DisplayName("[RATE LIMIT] GET /history has X-RateLimit-Limit header of 10 (global filter)")
-    void history_hasGlobalRateLimitHeader() throws Exception {
-        mockMvc.perform(get("/api/summarizer/history"))
-                .andExpect(status().isOk())
-                .andExpect(header().string("X-RateLimit-Limit", "10"));
+        assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(r.getHeaders().getFirst("X-RateLimit-Limit")).isEqualTo("10");
     }
 }

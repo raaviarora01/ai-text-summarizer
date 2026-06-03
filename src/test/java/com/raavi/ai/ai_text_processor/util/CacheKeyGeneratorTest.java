@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.*;
  * Verifies SHA-256 hashing, key format, consistency, and collision resistance.
  */
 @DisplayName("CacheKeyGenerator Tests")
-class CacheKeyGeneratorTest {
+public class CacheKeyGeneratorTest {
 
     @Test
     @DisplayName("generateCacheKey returns non-null key")

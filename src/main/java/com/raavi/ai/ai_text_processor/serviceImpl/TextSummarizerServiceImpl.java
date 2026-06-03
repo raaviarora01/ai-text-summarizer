@@ -1,5 +1,6 @@
 package com.raavi.ai.ai_text_processor.serviceImpl;
 
+import com.raavi.ai.ai_text_processor.aspect.CacheAspect;
 import com.raavi.ai.ai_text_processor.dao.TextSummaryRepository;
 import com.raavi.ai.ai_text_processor.dto.SummarizeRequest;
 import com.raavi.ai.ai_text_processor.dto.SummarizeResponse;
@@ -14,10 +15,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.context.ApplicationContext;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 public class TextSummarizerServiceImpl implements TextSummarizerService {
@@ -30,180 +34,144 @@ public class TextSummarizerServiceImpl implements TextSummarizerService {
     @Autowired
     private TextSummaryRepository textSummaryRepository;
 
+    @Autowired
+    private CacheAspect cacheAspect;
+
+    @Autowired
+    private ApplicationContext applicationContext;
+
     @Value("${gemini.model}")
     private String geminiModel;
 
+    /**
+     * Returns the Spring-proxied version of this service so @Cacheable fires correctly.
+     * Direct this.method() calls bypass the Spring AOP proxy and skip caching entirely.
+     */
+    private TextSummarizerServiceImpl self() {
+        return applicationContext.getBean(TextSummarizerServiceImpl.class);
+    }
+
+    // ─── summarizeText ────────────────────────────────────────────────────────
+
     @Override
     @Transactional
-    @Cacheable(
-        value = "textSummaries",
-        key = "T(com.raavi.ai.ai_text_processor.util.CacheKeyGenerator).generateCacheKey(#request.text, #request.summaryType != null ? #request.summaryType : 'CONCISE')",
-        unless = "#result == null"
-    )
     public SummarizeResponse summarizeText(SummarizeRequest request) {
+        validateRequest(request);
+
+        AtomicBoolean methodExecuted = new AtomicBoolean(false);
         try {
-            // Validate request
-            validateRequest(request);
-            
-            // Parse summary type (default to CONCISE if not provided)
-            String summaryTypeStr = request.getSummaryType() != null ? 
-                    request.getSummaryType() : 
-                    SummaryType.CONCISE.getType();
-            
-            SummaryType summaryType = SummaryType.fromString(summaryTypeStr);
-            
-            // Log cache entry point with detailed information
-            String cacheKey = CacheKeyGenerator.generateCacheKey(request.getText(), summaryTypeStr);
-            logger.info(
-                "=== CACHE LOOKUP ===\n" +
-                "  Cache Key: {}\n" +
-                "  Text Length: {} characters\n" +
-                "  Summary Type: {}\n" +
-                "  Status: Checking cache...",
-                cacheKey.substring(0, Math.min(16, cacheKey.length())) + "...", 
-                request.getText().length(), 
-                summaryType
-            );
-            
-            logger.debug("Processing summarization request with type: {}", summaryType);
-            
-            // Get the prompt for this summary type
-            String prompt = summaryType.getPrompt();
-            
-            // Call Gemini API via GeminiService
-            logger.info("⏳ CACHE MISS DETECTED - Calling Gemini API to generate new summary...");
-            long apiStartTime = System.currentTimeMillis();
-            
-            GeminiService.GeminiResponse geminiResponse = geminiService.summarizeText(
-                    request.getText(), 
-                    prompt
-            );
-            
-            long apiExecutionTime = System.currentTimeMillis() - apiStartTime;
-            logger.info("✓ Gemini API call completed in {}ms | Tokens Used: {}", 
-                    apiExecutionTime, geminiResponse.getTokensUsed());
-            
-            // Create and save TextSummary entity
-            TextSummary textSummary = new TextSummary();
-            textSummary.setOriginalText(request.getText());
-            textSummary.setSummarizedText(geminiResponse.getSummary());
-            textSummary.setSummaryType(summaryType);
-            textSummary.setTokensUsed(geminiResponse.getTokensUsed());
-            textSummary.setModelUsed(geminiModel);
-            
-            TextSummary savedSummary = textSummaryRepository.save(textSummary);
-            
-            logger.info("✓ Summary saved to database with ID: {} | This result is now CACHED", savedSummary.getId());
-            
-            // Convert to response DTO
-            SummarizeResponse response = mapToResponse(savedSummary);
-            
-            logger.info(
-                "=== CACHE STORAGE ===\n" +
-                "  Summary ID: {}\n" +
-                "  Status: Result cached successfully\n" +
-                "  Next identical request will use cached result",
-                savedSummary.getId()
-            );
-            
+            SummarizeResponse response = self().summarizeTextCached(request, methodExecuted);
+            if (!methodExecuted.get()) {
+                cacheAspect.recordCacheHit("summarizeText");
+                logger.info("✅ CACHE HIT — summarizeText");
+            }
             return response;
-            
-        } catch (IllegalArgumentException e) {
-            logger.error("Validation error: {}", e.getMessage());
-            throw e;
-        } catch (GeminiApiException e) {
-            logger.error("Gemini API error: {}", e.getMessage());
+        } catch (IllegalArgumentException | GeminiApiException e) {
             throw e;
         } catch (Exception e) {
-            logger.error("Unexpected error during summarization", e);
             throw new RuntimeException("Failed to summarize text: " + e.getMessage(), e);
         }
     }
 
+    @Cacheable(
+            value = "textSummaries",
+            key = "T(com.raavi.ai.ai_text_processor.util.CacheKeyGenerator).generateCacheKey(#request.text, #request.summaryType != null ? #request.summaryType : 'concise')",
+            unless = "#result == null"
+    )
+    public SummarizeResponse summarizeTextCached(SummarizeRequest request, AtomicBoolean methodExecuted) {
+        methodExecuted.set(true);
+
+        String summaryTypeStr = request.getSummaryType() != null ?
+                request.getSummaryType() : SummaryType.CONCISE.getType();
+        SummaryType summaryType = SummaryType.fromString(summaryTypeStr);
+
+        String cacheKey = CacheKeyGenerator.generateCacheKey(request.getText(), summaryTypeStr);
+        logger.info("❌ CACHE MISS — key: {}...", cacheKey.substring(0, Math.min(16, cacheKey.length())));
+
+        long apiStart = System.currentTimeMillis();
+        GeminiService.GeminiResponse geminiResponse = geminiService.summarizeText(
+                request.getText(), summaryType.getPrompt());
+        logger.info("✓ Gemini API call completed in {}ms | Tokens: {}",
+                System.currentTimeMillis() - apiStart, geminiResponse.getTokensUsed());
+
+        TextSummary textSummary = new TextSummary();
+        textSummary.setOriginalText(request.getText());
+        textSummary.setSummarizedText(geminiResponse.getSummary());
+        textSummary.setSummaryType(summaryType);
+        textSummary.setTokensUsed(geminiResponse.getTokensUsed());
+        textSummary.setModelUsed(geminiModel);
+
+        TextSummary saved = textSummaryRepository.save(textSummary);
+        logger.info("✓ Summary saved to DB with ID: {} | Now cached", saved.getId());
+        return mapToResponse(saved);
+    }
+
+    // ─── getHistory ───────────────────────────────────────────────────────────
+
     @Override
     @Transactional(readOnly = true)
-    @Cacheable(
-        value = "summaryHistory",
-        key = "'page-' + #pageable.getPageNumber() + '-size-' + #pageable.getPageSize()",
-        unless = "#result == null"
-    )
     public Page<SummarizeResponse> getHistory(Pageable pageable) {
-        logger.info(
-            "=== CACHE LOOKUP (GET HISTORY) ===\n" +
-            "  Cache Key: page-{}-size-{}\n" +
-            "  Status: Checking cache...",
-            pageable.getPageNumber(), pageable.getPageSize()
-        );
-        
-        logger.info("⏳ CACHE MISS DETECTED - Fetching from database: page={}, size={}", 
-                pageable.getPageNumber(), pageable.getPageSize());
-        
-        Page<TextSummary> summaries = textSummaryRepository.findAll(pageable);
-        
-        logger.info("✓ Retrieved {} summaries from database | Result is now CACHED", 
-                summaries.getNumberOfElements());
-        
-        return summaries.map(this::mapToResponse);
+        AtomicBoolean methodExecuted = new AtomicBoolean(false);
+        Page<SummarizeResponse> result = self().getHistoryCached(pageable, methodExecuted);
+        if (!methodExecuted.get()) {
+            cacheAspect.recordCacheHit("getHistory");
+            logger.info("✅ CACHE HIT — getHistory page={}", pageable.getPageNumber());
+        }
+        return result;
     }
+
+    @Cacheable(
+            value = "summaryHistory",
+            key = "'page-' + #pageable.getPageNumber() + '-size-' + #pageable.getPageSize()",
+            unless = "#result == null"
+    )
+    public Page<SummarizeResponse> getHistoryCached(Pageable pageable, AtomicBoolean methodExecuted) {
+        methodExecuted.set(true);
+        logger.info("❌ CACHE MISS — getHistory page={}, size={}",
+                pageable.getPageNumber(), pageable.getPageSize());
+        return textSummaryRepository.findAll(pageable).map(this::mapToResponse);
+    }
+
+    // ─── getHistoryByType ─────────────────────────────────────────────────────
 
     @Override
     @Transactional(readOnly = true)
-    @Cacheable(
-        value = "summaryHistoryByType",
-        key = "'type-' + #summaryType + '-page-' + #pageable.getPageNumber() + '-size-' + #pageable.getPageSize()",
-        unless = "#result == null"
-    )
     public Page<SummarizeResponse> getHistoryByType(String summaryType, Pageable pageable) {
-        try {
-            SummaryType type = SummaryType.fromString(summaryType);
-            
-            logger.info(
-                "=== CACHE LOOKUP (GET HISTORY BY TYPE) ===\n" +
-                "  Cache Key: type-{}-page-{}-size-{}\n" +
-                "  Status: Checking cache...",
-                summaryType, pageable.getPageNumber(), pageable.getPageSize()
-            );
-            
-            logger.info("⏳ CACHE MISS DETECTED - Fetching from database: type={}, page={}, size={}", 
-                    type, pageable.getPageNumber(), pageable.getPageSize());
-            
-            Page<TextSummary> summaries = textSummaryRepository.findBySummaryType(type, pageable);
-            
-            logger.info("✓ Retrieved {} summaries by type '{}' from database | Result is now CACHED", 
-                    summaries.getNumberOfElements(), summaryType);
-            
-            return summaries.map(this::mapToResponse);
-            
-        } catch (IllegalArgumentException e) {
-            logger.error("Invalid summary type provided: {}", summaryType);
-            throw e;
+        AtomicBoolean methodExecuted = new AtomicBoolean(false);
+        Page<SummarizeResponse> result = self().getHistoryByTypeCached(summaryType, pageable, methodExecuted);
+        if (!methodExecuted.get()) {
+            cacheAspect.recordCacheHit("getHistoryByType");
+            logger.info("✅ CACHE HIT — getHistoryByType type={}", summaryType);
         }
+        return result;
     }
 
-    /**
-     * Validates the summarization request
-     */
+    @Cacheable(
+            value = "summaryHistoryByType",
+            key = "'type-' + #summaryType + '-page-' + #pageable.getPageNumber() + '-size-' + #pageable.getPageSize()",
+            unless = "#result == null"
+    )
+    public Page<SummarizeResponse> getHistoryByTypeCached(String summaryType, Pageable pageable,
+                                                          AtomicBoolean methodExecuted) {
+        methodExecuted.set(true);
+        SummaryType type = SummaryType.fromString(summaryType);
+        logger.info("❌ CACHE MISS — getHistoryByType type={}, page={}", type, pageable.getPageNumber());
+        return textSummaryRepository.findBySummaryType(type, pageable).map(this::mapToResponse);
+    }
+
+    // ─── helpers ──────────────────────────────────────────────────────────────
+
     private void validateRequest(SummarizeRequest request) {
-        if (request == null) {
+        if (request == null)
             throw new IllegalArgumentException("Request cannot be null");
-        }
-        
-        if (request.getText() == null || request.getText().trim().isEmpty()) {
+        if (request.getText() == null || request.getText().trim().isEmpty())
             throw new IllegalArgumentException("Text cannot be null or empty");
-        }
-        
-        if (request.getText().length() < 10) {
+        if (request.getText().length() < 10)
             throw new IllegalArgumentException("Text must be at least 10 characters long");
-        }
-        
-        if (request.getText().length() > 50000) {
+        if (request.getText().length() > 50000)
             throw new IllegalArgumentException("Text must not exceed 50000 characters");
-        }
     }
 
-    /**
-     * Maps TextSummary entity to SummarizeResponse DTO
-     */
     private SummarizeResponse mapToResponse(TextSummary entity) {
         SummarizeResponse response = new SummarizeResponse();
         response.setId(entity.getId());

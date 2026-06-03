@@ -19,10 +19,10 @@ public class TextSummary {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "original_text", columnDefinition = "TEXT", nullable = false)
+    @Column(name = "original_text", nullable = false, length = 50000)
     private String originalText;
 
-    @Column(name = "summarized_text", columnDefinition = "TEXT")
+    @Column(name = "summarized_text", length = 50000)
     private String summarizedText;
 
     @Column(name = "summary_type", nullable = false, length = 50)

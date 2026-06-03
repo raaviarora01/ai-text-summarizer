@@ -10,7 +10,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cache.CacheManager;
 import org.springframework.http.MediaType;
@@ -41,12 +42,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "spring.datasource.url=jdbc:h2:mem:integrationtest;DB_CLOSE_DELAY=-1",
+        "spring.datasource.url=jdbc:h2:mem:integrationtest;DB_CLOSE_DELAY=-1;NON_KEYWORDS=VALUE",
         "spring.datasource.driver-class-name=org.h2.Driver",
         "spring.datasource.username=sa",
         "spring.datasource.password=",
         "spring.jpa.database-platform=org.hibernate.dialect.H2Dialect",
+        "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.H2Dialect",
         "spring.jpa.hibernate.ddl-auto=create-drop",
+        "spring.jpa.show-sql=false",
         "gemini.api.key=test-api-key-not-real-123456789012345",
         "gemini.model=gemini-2.5-flash",
         "gemini.api.url=https://generativelanguage.googleapis.com/v1/models/",
@@ -55,7 +58,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "management.endpoint.health.show-details=always"
 })
 @DisplayName("Integration Tests — Full Spring Context")
-class FullIntegrationTest {
+public class FullIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;

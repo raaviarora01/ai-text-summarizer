@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.*;
  * Tests all valid types, case-insensitivity, null/empty handling, and invalid input.
  */
 @DisplayName("SummaryType Enum Tests")
-class SummaryTypeTest {
+public class SummaryTypeTest {
 
     // ─── fromString: valid values ─────────────────────────────────────────────
 
